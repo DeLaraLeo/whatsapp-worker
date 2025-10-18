@@ -1,0 +1,24 @@
+services:
+  whatsapp-worker:
+    container_name: whatsapp-worker-bot-financeiro
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - AMQP_HOST=rabbitmq-bot-financeiro
+      - AMQP_PORT=5672
+      - AMQP_USER=admin
+      - AMQP_PASSWORD=admin123
+    volumes:
+      - whatsapp_storage:/root/storage
+    networks:
+      - bot-financeiro-network
+    restart: unless-stopped
+
+volumes:
+  whatsapp_storage:
+    driver: local
+
+networks:
+  bot-financeiro-network:
+    external: true
