@@ -35,6 +35,7 @@ var (
 
 	rabbitMQURL     = "amqp://" + amqpUser + ":" + amqpPassword + "@" + amqpHost + ":" + amqpPort + "/"
 	rabbitMQChannel *amqp.Channel
+	rabbitMQConn    *amqp.Connection
 )
 
 func failOnErrorWithTransaction(err error, transactionId string) {
@@ -131,10 +132,28 @@ func initRabbitMQ() *amqp.Channel {
 	channel, err := connection.Channel()
 	failOnError(err, "Could not create RabbitMQ channel")
 
+	// Store connection for reconnection
+	rabbitMQConn = connection
+
 	// Create queues if they don't exist
 	createQueues(channel)
 
 	return channel
+}
+
+func ensureRabbitMQConnection() {
+	if rabbitMQChannel == nil || rabbitMQChannel.IsClosed() {
+		log.Println("RabbitMQ channel is closed, reconnecting...")
+		
+		// Close existing connection if any
+		if rabbitMQConn != nil {
+			rabbitMQConn.Close()
+		}
+		
+		// Reconnect
+		rabbitMQChannel = initRabbitMQ()
+		log.Println("RabbitMQ reconnected successfully")
+	}
 }
 
 func createQueues(channel *amqp.Channel) {
@@ -195,7 +214,13 @@ func messageReceiveHandler(evt interface{}) {
 		logWithTransaction(payload.TransactionId, "INFO", "Received message from "+payload.SenderNumber)
 
 		msgData, err := json.Marshal(payload)
-		failOnErrorWithTransaction(err, payload.TransactionId)
+		if err != nil {
+			logWithTransaction(payload.TransactionId, "ERROR", "Failed to marshal message: "+err.Error())
+			return
+		}
+
+		// Ensure RabbitMQ connection is alive
+		ensureRabbitMQConnection()
 
 		err = rabbitMQChannel.Publish(
 			"",
@@ -207,7 +232,12 @@ func messageReceiveHandler(evt interface{}) {
 				Body:        msgData,
 			},
 		)
-		failOnErrorWithTransaction(err, payload.TransactionId)
+		if err != nil {
+			logWithTransaction(payload.TransactionId, "ERROR", "Failed to publish message: "+err.Error())
+			return
+		}
+		
+		logWithTransaction(payload.TransactionId, "INFO", "Message published to RabbitMQ successfully")
 	}
 }
 
