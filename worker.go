@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -142,8 +144,9 @@ func initRabbitMQ() *amqp.Channel {
 }
 
 func ensureRabbitMQConnection() {
-	if rabbitMQChannel == nil || rabbitMQChannel.IsClosed() {
-		log.Println("RabbitMQ channel is closed, reconnecting...")
+	// Always try to reconnect if channel is nil or if we get an error
+	if rabbitMQChannel == nil {
+		log.Println("RabbitMQ channel is nil, reconnecting...")
 		
 		// Close existing connection if any
 		if rabbitMQConn != nil {
@@ -156,9 +159,60 @@ func ensureRabbitMQConnection() {
 	}
 }
 
+func publishWithRetry(transactionId string, msgData []byte) error {
+	maxRetries := 3
+	
+	for i := 0; i < maxRetries; i++ {
+		// Force reconnect on every attempt
+		rabbitMQChannel = nil
+		rabbitMQConn = nil
+		ensureRabbitMQConnection()
+		
+		err := rabbitMQChannel.Publish(
+			"",
+			receiveMessageQueueName,
+			false,
+			false,
+			amqp.Publishing{
+				ContentType: "application/json",
+				Body:        msgData,
+			},
+		)
+		
+		if err == nil {
+			return nil // Success
+		}
+		
+		logWithTransaction(transactionId, "WARN", fmt.Sprintf("Publish attempt %d failed: %s", i+1, err.Error()))
+		
+		// Wait a bit before retry
+		if i < maxRetries-1 {
+			time.Sleep(time.Second * 2)
+		}
+	}
+	
+	return fmt.Errorf("failed to publish after %d attempts", maxRetries)
+}
+
 func createQueues(channel *amqp.Channel) {
+	// Create exchange for send messages
+	err := channel.ExchangeDeclare(
+		"whatsapp.send",  // exchange name
+		"topic",          // type
+		true,             // durable
+		false,            // auto-delete
+		false,            // internal
+		false,            // no-wait
+		nil,              // arguments
+	)
+	if err != nil {
+		log.Printf("Error creating send exchange: %v", err)
+	} else {
+		log.Println("Send exchange created successfully")
+	}
+
 	// Create send message queue
-	_, err := channel.QueueDeclare(
+	_, err = channel.QueueDeclare(
 		sendMessageQueueName, // name
 		true,                  // durable
 		false,                 // delete when unused
@@ -170,6 +224,20 @@ func createQueues(channel *amqp.Channel) {
 		log.Printf("Error creating send queue: %v", err)
 	} else {
 		log.Println("Send queue created successfully")
+	}
+
+	// Bind send queue to exchange
+	err = channel.QueueBind(
+		sendMessageQueueName, // queue name
+		"send",               // routing key
+		"whatsapp.send",      // exchange name
+		false,                // no-wait
+		nil,                  // arguments
+	)
+	if err != nil {
+		log.Printf("Error binding send queue: %v", err)
+	} else {
+		log.Println("Send queue bound to exchange successfully")
 	}
 
 	// Create receive message queue
@@ -188,10 +256,25 @@ func createQueues(channel *amqp.Channel) {
 	}
 }
 
-func messageReceiveHandler(evt interface{}) {
+func messageReceiveHandler(client *whatsmeow.Client) func(interface{}) {
+	return func(evt interface{}) {
 	switch evt := evt.(type) {
 	case *events.Message:
-		if evt.Info.IsFromMe || evt.Info.IsGroup || evt.Info.Type != "text" {
+		// Debug log for all messages
+		log.Printf("DEBUG: Received message - Type: %s, From: %s, IsFromMe: %v, IsGroup: %v", 
+			evt.Info.Type, evt.Info.Sender.User, evt.Info.IsFromMe, evt.Info.IsGroup)
+		
+		// Ignore messages from bot itself or groups
+		if evt.Info.IsFromMe || evt.Info.IsGroup {
+			log.Printf("DEBUG: Ignoring message - IsFromMe: %v, IsGroup: %v", evt.Info.IsFromMe, evt.Info.IsGroup)
+			return
+		}
+
+		// Check if message type is not text
+		if evt.Info.Type != "text" {
+			log.Printf("DEBUG: Non-text message detected - Type: %s, From: %s", evt.Info.Type, evt.Info.Sender.User)
+			// Send automatic response for non-text messages
+			sendUnsupportedMessageTypeResponse(client, evt.Info.Sender.User, evt.Info.Type)
 			return
 		}
 
@@ -219,7 +302,9 @@ func messageReceiveHandler(evt interface{}) {
 			return
 		}
 
-		// Ensure RabbitMQ connection is alive
+		// Always reconnect before publishing
+		rabbitMQChannel = nil
+		rabbitMQConn = nil
 		ensureRabbitMQConnection()
 
 		err = rabbitMQChannel.Publish(
@@ -238,7 +323,24 @@ func messageReceiveHandler(evt interface{}) {
 		}
 		
 		logWithTransaction(payload.TransactionId, "INFO", "Message published to RabbitMQ successfully")
+		}
 	}
+}
+
+func sendUnsupportedMessageTypeResponse(client *whatsmeow.Client, senderNumber string, messageType string) {
+	log.Printf("Received unsupported message type '%s' from %s, sending auto-response", messageType, senderNumber)
+	
+	// Create auto-response message
+	responsePayload := NewSendMessagePayload()
+	responsePayload.MessageType = "text"
+	responsePayload.RecipientNumber = senderNumber
+	responsePayload.MessageBody = "⚠️ Desculpe, mas só aceito mensagens de texto. Por favor, envie apenas mensagens escritas."
+	
+	logWithTransaction(responsePayload.TransactionId, "INFO", "Sending auto-response for unsupported message type")
+	
+	// Send the response message directly
+	msgData, _ := json.Marshal(responsePayload)
+	handleSendWhatsappMessage(client, msgData)
 }
 
 func main() {
@@ -253,7 +355,7 @@ func main() {
 	clientLog := waLog.Stdout("Client", "INFO", true)
 	client := whatsmeow.NewClient(deviceStore, clientLog)
 	client.AutomaticMessageRerequestFromPhone = true
-	client.AddEventHandler(messageReceiveHandler)
+	client.AddEventHandler(messageReceiveHandler(client))
 
 	rabbitMQChannel = initRabbitMQ()
 
@@ -272,10 +374,14 @@ func main() {
 		failOnError(err, "Error connecting to client")
 	}
 
+	log.Println("Setting up RabbitMQ consumer for q.message.send...")
 	messages := setUpRabbitMQConsumer(rabbitMQChannel)
+	log.Println("RabbitMQ consumer setup completed successfully")
 
 	go func() {
+		log.Println("Starting consumer goroutine...")
 		for message := range messages {
+			log.Printf("Received message from q.message.send: %s", string(message.Body))
 			handleSendWhatsappMessage(client, message.Body)
 			message.Ack(false)
 		}
