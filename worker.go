@@ -27,6 +27,7 @@ import (
 const (
 	receiveMessageQueueName = "q.message.receive"
 	sendMessageQueueName    = "q.message.send"
+	// allowedPhoneNumber      = "554288872501" // Uncomment for local environment filtering
 )
 
 var (
@@ -270,6 +271,12 @@ func messageReceiveHandler(client *whatsmeow.Client) func(interface{}) {
 			return
 		}
 
+		// Filter by allowed phone number (commented for production)
+		// if evt.Info.Sender.User != allowedPhoneNumber {
+		// 	log.Printf("DEBUG: Ignoring message from unauthorized number: %s (allowed: %s)", evt.Info.Sender.User, allowedPhoneNumber)
+		// 	return
+		// }
+
 		// Check if message type is not text
 		if evt.Info.Type != "text" {
 			log.Printf("DEBUG: Non-text message detected - Type: %s, From: %s", evt.Info.Type, evt.Info.Sender.User)
@@ -334,7 +341,7 @@ func sendUnsupportedMessageTypeResponse(client *whatsmeow.Client, senderNumber s
 	responsePayload := NewSendMessagePayload()
 	responsePayload.MessageType = "text"
 	responsePayload.RecipientNumber = senderNumber
-	responsePayload.MessageBody = "⚠️ Desculpe, mas só aceito mensagens de texto. Por favor, envie apenas mensagens escritas."
+	responsePayload.MessageBody = "Olá! No momento, só consigo processar mensagens de texto. Por favor, envie sua mensagem em formato de texto."
 	
 	logWithTransaction(responsePayload.TransactionId, "INFO", "Sending auto-response for unsupported message type")
 	

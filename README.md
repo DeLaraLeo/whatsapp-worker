@@ -22,9 +22,13 @@ docker network create bot-financeiro-network
 docker compose up -d
 ```
 
-### 4. Suba o WhatsApp Worker
+### 4. Build e suba o WhatsApp Worker
 ```bash
 # No diretório do whatsapp-worker
+# Primeira vez ou após mudanças no código
+docker compose up --build -d
+
+# Ou apenas subir (se já buildou antes)
 docker compose up -d
 ```
 
@@ -38,15 +42,21 @@ docker compose logs -f whatsapp-worker
 ## 📨 Como Usar
 
 ### Enviar Mensagem
-Publique na fila `q.message.send`:
+Publique na exchange `whatsapp.send` com routing key `send`:
 ```json
 {
   "message_type": "text",
   "recipient_number": "5511999999999",
   "message_body": "Olá!",
+  "quoted_message_id": "optional_reply_id",
   "transaction_id": "uuid-unique"
 }
 ```
+
+**RabbitMQ:**
+- **Exchange**: `whatsapp.send` (tipo: topic)
+- **Routing Key**: `send`
+- **Fila**: `q.message.send` (bindada automaticamente)
 
 ### Receber Mensagens
 Escute a fila `q.message.receive`:
@@ -74,7 +84,19 @@ docker volume rm whatsapp-worker_whatsapp_storage
 docker compose up -d
 ```
 
+## ⚙️ Configurações
+
+### Mensagens Não-Texto
+- Mensagens que não são de texto (imagens, áudios, etc.) recebem resposta automática
+- Resposta: "Olá! No momento, só consigo processar mensagens de texto. Por favor, envie sua mensagem em formato de texto."
+
+### Recursos Criados Automaticamente
+- **Exchange**: `whatsapp.send` (tipo: topic, durable)
+- **Fila**: `q.message.send` (bindada ao exchange com routing key `send`)
+- **Fila**: `q.message.receive` (durable)
+
 ## 🔍 Monitoramento
 
-- **RabbitMQ**: http://localhost:15672 (admin/admin123)
+- **RabbitMQ Management**: http://localhost:15672 (admin/admin123)
 - **Filas**: `q.message.send` e `q.message.receive`
+- **Exchange**: `whatsapp.send`
