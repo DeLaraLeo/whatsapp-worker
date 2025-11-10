@@ -12,8 +12,8 @@ services:
     volumes:
       - whatsapp_storage:/root/storage
     networks:
-      - bot-financeiro-network
-    restart: unless-stopped
+      - bot-financeiro-network    
+    restart: always
 
 volumes:
   whatsapp_storage:
