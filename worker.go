@@ -195,6 +195,15 @@ func publishWithRetry(transactionId string, msgData []byte) error {
 	return fmt.Errorf("failed to publish after %d attempts", maxRetries)
 }
 
+// extractPhoneNumberFromJID extrai o número de telefone correto do SenderAlt (que é um JID)
+// O JID tem o formato onde User contém o número correto
+func extractPhoneNumberFromJID(senderAlt types.JID) string {
+	if senderAlt.User == "" {
+		return ""
+	}
+	return senderAlt.User
+}
+
 func createQueues(channel *amqp.Channel) {
 	// Create exchange for send messages
 	err := channel.ExchangeDeclare(
@@ -259,11 +268,28 @@ func createQueues(channel *amqp.Channel) {
 
 func messageReceiveHandler(client *whatsmeow.Client) func(interface{}) {
 	return func(evt interface{}) {
+		// Debug: mostrar o objeto completo recebido
+		evtJSON, err := json.MarshalIndent(evt, "", "  ")
+		if err != nil {
+			log.Printf("DEBUG: Erro ao serializar evento: %v", err)
+			log.Printf("DEBUG: Tipo do evento: %T", evt)
+			log.Printf("DEBUG: Evento (formato string): %+v", evt)
+		} else {
+			log.Printf("DEBUG: Objeto completo recebido:\n%s", string(evtJSON))
+		}
+		
 	switch evt := evt.(type) {
 	case *events.Message:
+		// Extrair o número de telefone correto do SenderAlt (JID)
+		senderNumber := extractPhoneNumberFromJID(evt.Info.SenderAlt)
+		if senderNumber == "" {
+			// Fallback para Sender.User se SenderAlt não estiver disponível
+			senderNumber = evt.Info.Sender.User
+		}
+		
 		// Debug log for all messages
-		log.Printf("DEBUG: Received message - Type: %s, From: %s, IsFromMe: %v, IsGroup: %v", 
-			evt.Info.Type, evt.Info.Sender.User, evt.Info.IsFromMe, evt.Info.IsGroup)
+		log.Printf("DEBUG: Received message - Type: %s, From: %s (SenderAlt: %s, Sender: %s), IsFromMe: %v, IsGroup: %v", 
+			evt.Info.Type, senderNumber, evt.Info.SenderAlt.String(), evt.Info.Sender.User, evt.Info.IsFromMe, evt.Info.IsGroup)
 		
 		// Ignore messages from bot itself or groups
 		if evt.Info.IsFromMe || evt.Info.IsGroup {
@@ -272,22 +298,22 @@ func messageReceiveHandler(client *whatsmeow.Client) func(interface{}) {
 		}
 
 		// Filter by allowed phone number (commented for production)
-		// if evt.Info.Sender.User != allowedPhoneNumber {
-		// 	log.Printf("DEBUG: Ignoring message from unauthorized number: %s (allowed: %s)", evt.Info.Sender.User, allowedPhoneNumber)
+		// if senderNumber != allowedPhoneNumber {
+		// 	log.Printf("DEBUG: Ignoring message from unauthorized number: %s (allowed: %s)", senderNumber, allowedPhoneNumber)
 		// 	return
 		// }
 
 		// Check if message type is not text
 		if evt.Info.Type != "text" {
-			log.Printf("DEBUG: Non-text message detected - Type: %s, From: %s", evt.Info.Type, evt.Info.Sender.User)
+			log.Printf("DEBUG: Non-text message detected - Type: %s, From: %s", evt.Info.Type, senderNumber)
 			// Send automatic response for non-text messages
-			sendUnsupportedMessageTypeResponse(client, evt.Info.Sender.User, evt.Info.Type)
+			sendUnsupportedMessageTypeResponse(client, senderNumber, evt.Info.Type)
 			return
 		}
 
 		payload := NewReceiveMessagePayload()
 		payload.MessageType = "text"
-		payload.SenderNumber = evt.Info.Sender.User
+		payload.SenderNumber = senderNumber
 		payload.MessageId = evt.Info.ID
 
 		if evt.Message.Conversation != nil {
