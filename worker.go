@@ -280,16 +280,17 @@ func messageReceiveHandler(client *whatsmeow.Client) func(interface{}) {
 		
 	switch evt := evt.(type) {
 	case *events.Message:
-		// Extrair o número de telefone correto do SenderAlt (JID)
-		senderNumber := extractPhoneNumberFromJID(evt.Info.SenderAlt)
+		// Extrair o número de telefone correto do Sender (número real do WhatsApp)
+		// SenderAlt contém o LID (Linked Identity Device), não o número real
+		senderNumber := evt.Info.Sender.User
 		if senderNumber == "" {
-			// Fallback para Sender.User se SenderAlt não estiver disponível
-			senderNumber = evt.Info.Sender.User
+			// Fallback para SenderAlt.User apenas se Sender.User não estiver disponível
+			senderNumber = extractPhoneNumberFromJID(evt.Info.SenderAlt)
 		}
 		
 		// Debug log for all messages
-		log.Printf("DEBUG: Received message - Type: %s, From: %s (SenderAlt: %s, Sender: %s), IsFromMe: %v, IsGroup: %v", 
-			evt.Info.Type, senderNumber, evt.Info.SenderAlt.String(), evt.Info.Sender.User, evt.Info.IsFromMe, evt.Info.IsGroup)
+		log.Printf("DEBUG: Received message - Type: %s, From: %s (Sender: %s, SenderAlt: %s), IsFromMe: %v, IsGroup: %v", 
+			evt.Info.Type, senderNumber, evt.Info.Sender.User, evt.Info.SenderAlt.String(), evt.Info.IsFromMe, evt.Info.IsGroup)
 		
 		// Ignore messages from bot itself or groups
 		if evt.Info.IsFromMe || evt.Info.IsGroup {
