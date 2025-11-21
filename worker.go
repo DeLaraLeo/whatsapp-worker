@@ -195,13 +195,34 @@ func publishWithRetry(transactionId string, msgData []byte) error {
 	return fmt.Errorf("failed to publish after %d attempts", maxRetries)
 }
 
-// extractPhoneNumberFromJID extrai o número de telefone correto do SenderAlt (que é um JID)
-// O JID tem o formato onde User contém o número correto
-func extractPhoneNumberFromJID(senderAlt types.JID) string {
-	if senderAlt.User == "" {
+// extractPhoneNumberFromJID extrai o número de telefone do JID
+func extractPhoneNumberFromJID(jid types.JID) string {
+	if jid.User == "" {
 		return ""
 	}
-	return senderAlt.User
+	return jid.User
+}
+
+// getRealPhoneNumber detecta qual JID contém o número real do WhatsApp
+// O número real sempre tem servidor @s.whatsapp.net, enquanto LID tem @lid
+func getRealPhoneNumber(sender types.JID, senderAlt types.JID) string {
+	// Verifica se Sender é o número real (termina com @s.whatsapp.net)
+	if sender.Server == types.DefaultUserServer {
+		return extractPhoneNumberFromJID(sender)
+	}
+	
+	// Se Sender não é o número real, verifica SenderAlt
+	if senderAlt.Server == types.DefaultUserServer {
+		return extractPhoneNumberFromJID(senderAlt)
+	}
+	
+	// Fallback: se nenhum tiver o servidor correto, usa Sender
+	if sender.User != "" {
+		return sender.User
+	}
+	
+	// Último fallback: usa SenderAlt
+	return extractPhoneNumberFromJID(senderAlt)
 }
 
 func createQueues(channel *amqp.Channel) {
@@ -280,17 +301,15 @@ func messageReceiveHandler(client *whatsmeow.Client) func(interface{}) {
 		
 	switch evt := evt.(type) {
 	case *events.Message:
-		// Extrair o número de telefone correto do Sender (número real do WhatsApp)
-		// SenderAlt contém o LID (Linked Identity Device), não o número real
-		senderNumber := evt.Info.Sender.User
-		if senderNumber == "" {
-			// Fallback para SenderAlt.User apenas se Sender.User não estiver disponível
-			senderNumber = extractPhoneNumberFromJID(evt.Info.SenderAlt)
-		}
+		// Extrair o número de telefone correto detectando qual JID contém o número real
+		// Quando usuário não está cadastrado: Sender é LID (@lid) e SenderAlt é número real (@s.whatsapp.net)
+		// Quando usuário está cadastrado: Sender é número real (@s.whatsapp.net) e SenderAlt é LID (@lid)
+		senderNumber := getRealPhoneNumber(evt.Info.Sender, evt.Info.SenderAlt)
 		
 		// Debug log for all messages
-		log.Printf("DEBUG: Received message - Type: %s, From: %s (Sender: %s, SenderAlt: %s), IsFromMe: %v, IsGroup: %v", 
-			evt.Info.Type, senderNumber, evt.Info.Sender.User, evt.Info.SenderAlt.String(), evt.Info.IsFromMe, evt.Info.IsGroup)
+		log.Printf("DEBUG: Received message - Type: %s, From: %s (Sender: %s [%s], SenderAlt: %s [%s]), IsFromMe: %v, IsGroup: %v", 
+			evt.Info.Type, senderNumber, evt.Info.Sender.User, evt.Info.Sender.Server, 
+			evt.Info.SenderAlt.User, evt.Info.SenderAlt.Server, evt.Info.IsFromMe, evt.Info.IsGroup)
 		
 		// Ignore messages from bot itself or groups
 		if evt.Info.IsFromMe || evt.Info.IsGroup {
